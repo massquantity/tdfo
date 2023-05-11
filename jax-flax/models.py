@@ -9,6 +9,7 @@ class TwoTower(nn.Module):
     size_map: Dict[str, int]
     embed_dim: int
     init_fn: Callable = jax.nn.initializers.glorot_uniform()
+    activation: Callable = jax.nn.swish
     dtype: jnp.dtype = jnp.float32
 
     def setup(self):
@@ -54,7 +55,7 @@ class TwoTower(nn.Module):
 
     def get_user_embeddings(self, x):
         user_embeds = self.user_embed(x["user_id"])
-        return self.user_fc2(nn.relu(self.user_fc1(user_embeds)))
+        return self.user_fc2(self.activation(self.user_fc1(user_embeds)))
 
     def get_item_embeddings(self, x):
         item_embeds = self.item_embed(x["item_id"])
@@ -71,15 +72,15 @@ class TwoTower(nn.Module):
                 format_embeds,
                 publisher_embeds,
                 pub_decade_embeds,
-                jnp.expand_dims(x["avg_rating"], 1),
-                jnp.expand_dims(x["num_pages"], 1),
+                jnp.expand_dims(x["avg_rating"], axis=1),
+                jnp.expand_dims(x["num_pages"], axis=1),
             ],
             axis=1,
         )
-        return self.item_fc2(nn.relu(self.item_fc1(item_repr)))
+        return self.item_fc2(self.activation(self.item_fc1(item_repr)))
 
 
-def init_model(rng: jax.random.PRNGKey, size_map: dict):
+def init_model(rng: jax.random.PRNGKey, size_map: dict, embed_dim: int):
     init_inputs = {
         "user_id": jnp.ones(1, dtype=jnp.int32),
         "item_id": jnp.ones(1, dtype=jnp.int32),
@@ -91,7 +92,7 @@ def init_model(rng: jax.random.PRNGKey, size_map: dict):
         "avg_rating": jnp.ones(1, dtype=jnp.float32),
         "num_pages": jnp.ones(1, dtype=jnp.float32),
     }
-    model = TwoTower(size_map, embed_dim=16)
+    model = TwoTower(size_map, embed_dim)
     params = model.init(rng, init_inputs)["params"]
     return model, params
 
