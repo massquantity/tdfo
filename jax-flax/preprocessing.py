@@ -8,7 +8,8 @@ from typing import Tuple
 import numpy as np
 import polars as pl
 
-DATA_DIR = Path("data/goodreads").absolute()
+from utils import read_configs
+
 SPLIT_RATIO = 0.8
 JOIN_UNIT = int(5e7)
 
@@ -109,31 +110,31 @@ def transform_categorical(mapping: dict, col_name: str, dtype: pl.DataType) -> p
     return data_col.map_dict(mapping, return_dtype=dtype)
 
 
-def get_user_num() -> int:
+def get_user_num(data_dir: Path) -> int:
     user_id_map = pl.read_csv(
-        DATA_DIR / "user_id_map.csv",
+        data_dir / "user_id_map.csv",
         new_columns=["user_id", "user_original_id"],
         dtypes={"user_id": pl.Int32},
     )
     return pl.count(user_id_map["user_id"])
 
 
-def read_item_id_data() -> Tuple[pl.DataFrame, int]:
+def read_item_id_data(data_dir: Path) -> Tuple[pl.DataFrame, int]:
     book_id_map = pl.read_csv(
-        DATA_DIR / "book_id_map.csv",
+        data_dir / "book_id_map.csv",
         new_columns=["book_id", "book_original_id"],
         dtypes={"book_id": pl.Int32, "book_original_id": pl.Utf8},
     )
     return book_id_map, pl.count(book_id_map["book_id"])
 
 
-def get_book_info() -> pl.DataFrame:
+def get_book_info(data_dir: Path) -> pl.DataFrame:
     size_map = dict()
-    size_map["user"] = get_user_num()
-    book_id_map, book_num = read_item_id_data()
+    size_map["user"] = get_user_num(data_dir)
+    book_id_map, book_num = read_item_id_data(data_dir)
     size_map["item"] = book_num
 
-    books = pl.scan_ndjson(DATA_DIR / "goodreads_books.json")
+    books = pl.scan_ndjson(data_dir / "goodreads_books.json")
     books_df = books.select(
         [
             pl.col("book_id").alias("book_original_id"),
@@ -202,17 +203,18 @@ def split_data(data: pl.LazyFrame, is_train: bool) -> pl.DataFrame:
 
 
 def write_parquet_data(
+    data_dir: Path,
     interaction_data: pl.LazyFrame,
     original_data: pl.DataFrame,
     book_features: pl.DataFrame,
     is_train: bool,
-    shuffle: bool,
 ):
     """Split interactions and join with original data and book features."""
     prefix = "train" if is_train else "eval"
+    shuffle = True if is_train else False
     start = time.perf_counter()
     interaction_data = split_data(interaction_data, is_train=is_train)
-    print(f"{prefix} split finished in {(time.perf_counter() - start):.2f}")
+    print(f"{prefix} split finished in {(time.perf_counter() - start):.2f}s")
     print(f"{prefix} data size: {len(interaction_data)}")
     for i, offset in enumerate(range(0, len(original_data), JOIN_UNIT)):
         print(f"writing {prefix} part_{i}...")
@@ -229,17 +231,22 @@ def write_parquet_data(
             .rename({"book_id": "item_id"})
             .select(FINAL_COLUMNS)
         )
-        part.write_parquet(DATA_DIR / f"{prefix}_part_{i}.parquet")
-        print(f"{prefix} part_{i} finished in {(time.perf_counter() - start):.2f}")
+        part.write_parquet(data_dir / f"{prefix}_part_{i}.parquet")
+        print(f"{prefix} part_{i} finished in {(time.perf_counter() - start):.2f}s")
+
+
+def write_size_map(data_dir: Path, size_map: dict):
+    with open(data_dir / "size_map.json", "w") as f:
+        json.dump(size_map, f, indent=4)
 
 
 def main():
-    book_features, size_map = get_book_info()
-    with open(DATA_DIR / "size_map.json", "w") as f:
-        json.dump(size_map, f, indent=4)
+    config = read_configs()
+    book_features, size_map = get_book_info(config.data_dir)
+    write_size_map(config.data_dir, size_map)
 
     data = (
-        pl.read_csv(DATA_DIR / "goodreads_interactions.csv", dtypes=DTYPES)
+        pl.read_csv(config.data_dir / "goodreads_interactions.csv", dtypes=DTYPES)
         .with_columns(
             pl.when(pl.col("rating") >= 4)
             .then(1)
@@ -254,8 +261,8 @@ def main():
     lazy_data = data.lazy().filter(
         pl.col("book_id").count().over("user_id").alias("num_interactions") >= 10
     )
-    write_parquet_data(lazy_data, data, book_features, is_train=True, shuffle=True)
-    write_parquet_data(lazy_data, data, book_features, is_train=False, shuffle=False)
+    write_parquet_data(config.data_dir, lazy_data, data, book_features, is_train=True)
+    write_parquet_data(config.data_dir, lazy_data, data, book_features, is_train=False)
 
 
 if __name__ == "__main__":

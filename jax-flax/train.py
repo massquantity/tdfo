@@ -1,6 +1,4 @@
-import json
 import math
-from pathlib import Path
 from typing import Dict, Optional
 
 import jax
@@ -13,14 +11,17 @@ from flax.training.train_state import TrainState
 from tqdm import trange
 
 from models import init_model
-
-DATA_DIR = Path("data/goodreads").absolute()
+from utils import read_configs
 
 
 def create_train_state(
-    rng: jax.random.PRNGKey, size_map: dict, learning_rate: float, weight_decay: float
+    rng: jax.random.PRNGKey,
+    size_map: dict,
+    learning_rate: float,
+    weight_decay: float,
+    embed_dim: int,
 ):
-    model, params = init_model(rng, size_map)
+    model, params = init_model(rng, size_map, embed_dim)
     # optimizer = optax.sgd(learning_rate=0.001, momentum=0.9)
     optimizer = optax.adamw(learning_rate=learning_rate, weight_decay=weight_decay)
     return TrainState.create(apply_fn=model.apply, params=params, tx=optimizer)
@@ -55,7 +56,7 @@ def data_loader(
     rng: Optional[jax.random.PRNGKey] = None,
 ):
     if shuffle:
-        if "cpu" in jax.default_backend():  # permutation is slow on cpu jax
+        if "cpu" in jax.default_backend():  # permutation is slow on cpu jax, use numpy instead
             np_rng = np.random.default_rng()
             batch_idx = np_rng.permutation(len(dataset))
         else:
@@ -92,20 +93,14 @@ def get_data_size(data_path: str):
 
 
 def main():
-    n_epochs = 10
-    learning_rate = 3e-4
-    weight_decay = 0.0  # 1e-4
-    seed = 42
-    batch_size, eval_batch_size = 2048, 8192
-    streaming = True
-    train_data_path = DATA_DIR / "train_1m.parquet"
-    eval_data_path = DATA_DIR / "eval_1m.parquet"
-    cache_dir = DATA_DIR / "huggingface"
-    size_map_path = DATA_DIR / "size_map.json"
+    config = read_configs()
+    train_data_path = config.data_dir / config.train_data
+    eval_data_path = config.data_dir / config.eval_data
+    cache_dir = config.data_dir / "huggingface"
 
     train_data_size = get_data_size(train_data_path)
     eval_data_size = get_data_size(eval_data_path)
-    print(f"train size: {train_data_size}, eval size: {eval_data_size}")
+    print(f"===== train size: {train_data_size}, eval size: {eval_data_size} =====\n")
 
     dataset = load_dataset(
         "parquet",
@@ -114,45 +109,57 @@ def main():
             "eval": str(eval_data_path),
         },
         cache_dir=str(cache_dir),
-        streaming=streaming,
+        streaming=config.streaming,
     )
-    n_train_steps = math.ceil(train_data_size / batch_size)
-    n_eval_steps = math.ceil(eval_data_size / eval_batch_size)
-    size_map = json.loads(Path.read_text(size_map_path))
-    rng = jax.random.PRNGKey(seed)
+    n_train_steps = math.ceil(train_data_size / config.per_device_train_batch_size)
+    n_eval_steps = math.ceil(eval_data_size / config.per_device_eval_batch_size)
+    rng = jax.random.PRNGKey(config.seed)
     rng, state_rng = jax.random.split(rng)
-    state = create_train_state(state_rng, size_map, learning_rate, weight_decay)
+    state = create_train_state(
+        state_rng,
+        config.size_map,
+        config.learning_rate,
+        config.weight_decay,
+        config.embed_dim,
+    )
 
-    for epoch in range(n_epochs):
+    for epoch in range(1, config.n_epochs + 1):
         train_loss = []
-        if streaming:
+        if config.streaming:
             train_loader = lazy_data_loader(
-                dataset["train"], batch_size, shuffle=True, seed=seed, epoch=epoch
+                dataset["train"],
+                config.per_device_train_batch_size,
+                shuffle=True,
+                seed=config.seed,
+                epoch=epoch,
             )
         else:
             rng, train_rng = jax.random.split(rng)
             train_loader = data_loader(
-                dataset["train"], batch_size, shuffle=True, rng=train_rng
+                dataset["train"],
+                config.per_device_train_batch_size,
+                shuffle=True,
+                rng=train_rng,
             )
         for _ in trange(n_train_steps, desc="Training..."):
             batch = next(train_loader)
             state, loss = train_step(state, batch)
             train_loss.append(loss)
-        print(f"train loss: {(jnp.mean(np.array(train_loss)).item()):.4f}")
+        print(f"\nEpoch {epoch} train loss: {(jnp.mean(np.array(train_loss)).item()):.4f}")
 
         eval_loss = []
-        if streaming:
+        if config.streaming:
             eval_loader = lazy_data_loader(
-                dataset["eval"], eval_batch_size, shuffle=False
+                dataset["eval"], config.per_device_eval_batch_size, shuffle=False
             )
         else:
             eval_loader = data_loader(
-                dataset["eval"], eval_batch_size, shuffle=False
+                dataset["eval"], config.per_device_eval_batch_size, shuffle=False
             )
         for _ in trange(n_eval_steps, desc="Evaluating..."):
             batch = next(eval_loader)
             eval_loss.append(eval_step(state, batch))
-        print(f"eval loss: {(np.mean(eval_loss)):.4f}")
+        print(f"\nEpoch {epoch} eval loss: {(np.mean(eval_loss)):.4f}")
 
 
 if __name__ == "__main__":

@@ -1,0 +1,12 @@
+data_dir = "data/goodreads"
+train_data = "train_part_*.parquet"
+eval_data = "eval_part_*.parquet"
+streaming = true
+
+n_epochs = 10
+learning_rate = 3e-4
+weight_decay = 0.0
+embed_dim = 16
+per_device_train_batch_size = 2048
+per_device_eval_batch_size = 2048
+seed = 42
