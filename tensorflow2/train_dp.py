@@ -28,7 +28,7 @@ def setup_strategy(config: Config) -> tf.distribute.Strategy:
 
 
 class DistDataset:
-    def __init__(self, strategy, data):
+    def __init__(self, strategy: tf.distribute.Strategy, data: tf.data.Dataset):
         self.data = strategy.experimental_distribute_dataset(data)
         self.data_size = len(data)
 
@@ -155,7 +155,10 @@ def main():
 
     with strategy.scope():
         model = TwoTower(config.size_map, config.embed_dim)
-        optimizer = tf.keras.optimizers.AdamW(config.learning_rate, config.weight_decay)
+        # `AdamW` became experimental since tf2.10
+        optimizer = tf.keras.optimizers.experimental.AdamW(
+            config.learning_rate, config.weight_decay
+        )
         loss_fn = tf.keras.losses.BinaryCrossentropy(
             from_logits=True, reduction=tf.keras.losses.Reduction.NONE
         )
