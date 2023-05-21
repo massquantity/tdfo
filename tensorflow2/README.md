@@ -3,6 +3,7 @@
 Before running, one should set some hyperparameters in [config.toml](https://github.com/massquantity/tdfo/blob/main/tensorflow2/config.toml). Some of these are worth mentioning:
 
 + `data_dir`: Directory of the downloaded data. It is also where the preprocessed data will be saved.
++ `num_workers`: Number of workers to use for loading the dataset. Only supported on Python versions >= 3.8.
 + `train_data`: The preprocessed training data is saved in multiple parts, and one can use wild card(*) to specify all the files.
 + `eval_data`: The preprocessed evaluation data.
 + `weight_decay`: Weight decay value in the [AdamW](https://www.tensorflow.org/api_docs/python/tf/keras/optimizers/AdamW) optimizer.

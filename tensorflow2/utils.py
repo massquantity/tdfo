@@ -24,6 +24,7 @@ class Config:
     data_dir: Path
     train_data: str
     eval_data: str
+    num_workers: int
     size_map: Dict[str, int]
     n_epochs: int
     learning_rate: float

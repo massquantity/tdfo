@@ -45,6 +45,7 @@ def build_data(
     cache_dir: Path,
     train_batch_size: int,
     eval_batch_size: int,
+    num_workers: int,
 ):
     dataset = load_dataset(
         "parquet",
@@ -61,6 +62,7 @@ def build_data(
         prefetch=True,
         columns=COLUMNS,
         label_cols="label",
+        num_workers=num_workers,
     )
     eval_dataset = dataset["eval"].to_tf_dataset(
         eval_batch_size,
@@ -69,6 +71,7 @@ def build_data(
         prefetch=True,
         columns=COLUMNS,
         label_cols="label",
+        num_workers=num_workers,
     )
     return train_dataset, eval_dataset
 
@@ -136,6 +139,7 @@ def main():
     n_replicas = strategy.num_replicas_in_sync
     train_batch_size = config.per_device_train_batch_size * n_replicas
     eval_batch_size = config.per_device_eval_batch_size * n_replicas
+    num_workers = config.num_workers
 
     train_data_size = get_data_size(train_data_path)
     eval_data_size = get_data_size(eval_data_path)
@@ -149,6 +153,7 @@ def main():
         cache_dir,
         train_batch_size,
         eval_batch_size,
+        num_workers,
     )
     train_dist_data = DistDataset(strategy, train_data)
     eval_dist_data = DistDataset(strategy, eval_data)
