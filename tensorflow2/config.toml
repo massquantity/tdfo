@@ -1,6 +1,7 @@
 data_dir = "data/goodreads"
 train_data = "train_part_*.parquet"
 eval_data = "eval_part_*.parquet"
+num_workers = 2
 
 n_epochs = 10
 learning_rate = 3e-4
