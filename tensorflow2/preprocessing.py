@@ -8,7 +8,7 @@ from typing import Tuple
 import numpy as np
 import polars as pl
 
-from data import read_original_data, write_parquet_data
+from data import read_original_data, write_data
 from utils import read_configs
 
 SPLIT_RATIO = 0.8
@@ -177,7 +177,7 @@ def split_data_by_index(data: pl.DataFrame, is_train: bool) -> pl.Series:
         .explode("reindex_ids")
         .select("reindex_ids")
         .collect(streaming=True)
-        .get_column("reindex_ids")
+        .to_series()
     )
 
 
@@ -192,20 +192,32 @@ def main():
     write_size_map(config.data_dir, size_map)
 
     interaction_data = read_original_data(config.data_dir)
+    print(f"data size: {pl.count(interaction_data['user_id']):,}")
+
     start_split = time.perf_counter()
     reindex_ids = split_data_by_index(interaction_data, is_train=True)
     print(f"train split finished in {(time.perf_counter() - start_split):.2f}s")
-    print(f"train data size: {len(reindex_ids)}\n")
-    write_parquet_data(
-        config.data_dir, reindex_ids, interaction_data, book_features, "train"
+    print(f"train data size: {len(reindex_ids):,}\n")
+    write_data(
+        config.data_dir,
+        reindex_ids,
+        interaction_data,
+        book_features,
+        config.write_format,
+        prefix="train",
     )
 
     start_split = time.perf_counter()
     reindex_ids = split_data_by_index(interaction_data, is_train=False)
     print(f"\neval split finished in {(time.perf_counter() - start_split):.2f}s")
-    print(f"eval data size: {len(reindex_ids)}")
-    write_parquet_data(
-        config.data_dir, reindex_ids, interaction_data, book_features, "eval"
+    print(f"eval data size: {len(reindex_ids):,}")
+    write_data(
+        config.data_dir,
+        reindex_ids,
+        interaction_data,
+        book_features,
+        config.write_format,
+        prefix="eval",
     )
 
 
