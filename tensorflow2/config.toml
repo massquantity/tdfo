@@ -1,6 +1,7 @@
 data_dir = "data/goodreads"
-train_data = "train_part_*.parquet"
-eval_data = "eval_part_*.parquet"
+train_data = "train_part_*.tfrecord"
+eval_data = "eval_part_*.tfrecord"
+write_format = "tfrecord"
 num_workers = 2
 
 n_epochs = 10

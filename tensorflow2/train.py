@@ -1,10 +1,8 @@
-from pathlib import Path
-
 import tensorflow as tf
-from datasets import load_dataset
 
+from data import read_parquet_data, read_tfrecord_data
 from models import TwoTower
-from utils import COLUMNS, Config, get_data_size, read_configs
+from utils import Config, get_data_size, read_configs
 
 
 def build_model(config: Config):
@@ -20,47 +18,10 @@ def build_model(config: Config):
     return model
 
 
-def build_data(
-    train_data_path: Path,
-    eval_data_path: Path,
-    cache_dir: Path,
-    train_batch_size: int,
-    eval_batch_size: int,
-    num_workers: int,
-):
-    dataset = load_dataset(
-        "parquet",
-        data_files={
-            "train": str(train_data_path),
-            "eval": str(eval_data_path),
-        },
-        cache_dir=str(cache_dir),
-    )
-    train_dataset = dataset["train"].to_tf_dataset(
-        train_batch_size,
-        shuffle=True,
-        drop_remainder=True,
-        prefetch=True,
-        columns=COLUMNS,
-        label_cols="label",
-        num_workers=num_workers,
-    )
-    eval_dataset = dataset["eval"].to_tf_dataset(
-        eval_batch_size,
-        shuffle=False,
-        drop_remainder=False,
-        prefetch=True,
-        columns=COLUMNS,
-        label_cols="label",
-        num_workers=num_workers,
-    )
-    return train_dataset, eval_dataset
-
-
 def main():
     config = read_configs()
-    train_data_path = config.data_dir / config.train_data
-    eval_data_path = config.data_dir / config.eval_data
+    train_data_path = config.data_dir / config.write_format / config.train_data
+    eval_data_path = config.data_dir / config.write_format / config.eval_data
     cache_dir = config.data_dir / "huggingface"
     train_batch_size = config.per_device_train_batch_size
     eval_batch_size = config.per_device_eval_batch_size
@@ -68,20 +29,31 @@ def main():
 
     train_data_size = get_data_size(train_data_path)
     eval_data_size = get_data_size(eval_data_path)
-    print(f"===== train size: {train_data_size}, eval size: {eval_data_size} =====\n")
+    print(f"===== train size: {train_data_size:,}, eval size: {eval_data_size:,} =====\n")
 
     tf.random.set_seed(config.seed)
-    train_data, eval_data = build_data(
-        train_data_path,
-        eval_data_path,
-        cache_dir,
-        train_batch_size,
-        eval_batch_size,
-        num_workers,
-    )
+    if config.write_format == "tfrecord":
+        train_data, eval_data = read_tfrecord_data(
+            train_data_path, eval_data_path, train_batch_size, eval_batch_size
+        )
+    else:
+        train_data, eval_data = read_parquet_data(
+            train_data_path,
+            eval_data_path,
+            cache_dir,
+            train_batch_size,
+            eval_batch_size,
+            num_workers,
+        )
+    n_train_steps = train_data_size // train_batch_size
 
     model = build_model(config)
-    model.fit(train_data, epochs=config.n_epochs, validation_data=eval_data)
+    model.fit(
+        train_data.repeat(config.n_epochs),
+        epochs=config.n_epochs,
+        validation_data=eval_data,
+        steps_per_epoch=n_train_steps,
+    )
 
 
 if __name__ == "__main__":

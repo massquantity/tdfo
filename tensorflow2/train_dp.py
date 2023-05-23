@@ -1,12 +1,21 @@
-from pathlib import Path
+import math
 from typing import Callable
 
 import tensorflow as tf
-from datasets import load_dataset
 from tqdm import tqdm
 
+from data import read_parquet_data, read_tfrecord_data
 from models import TwoTower
-from utils import COLUMNS, Config, get_data_size, read_configs
+from utils import Config, get_data_size, read_configs
+
+# N_VIRTUAL_DEVICES = 2
+# physical_devices = tf.config.list_physical_devices("CPU")
+# tf.config.set_logical_device_configuration(
+#   physical_devices[0],
+#    [tf.config.LogicalDeviceConfiguration() for _ in range(N_VIRTUAL_DEVICES)]
+# )
+# print("Simulated devices:",  tf.config.list_logical_devices())
+# strategy = tf.distribute.MirroredStrategy()
 
 
 def setup_strategy(config: Config) -> tf.distribute.Strategy:
@@ -28,52 +37,18 @@ def setup_strategy(config: Config) -> tf.distribute.Strategy:
 
 
 class DistDataset:
-    def __init__(self, strategy: tf.distribute.Strategy, data: tf.data.Dataset):
+
+    def __init__(
+        self, strategy: tf.distribute.Strategy, data: tf.data.Dataset, n_steps: int
+    ):
         self.data = strategy.experimental_distribute_dataset(data)
-        self.data_size = len(data)
+        self.n_steps = n_steps
 
     def __len__(self):
-        return self.data_size
+        return self.n_steps
 
     def __iter__(self):
         yield from self.data
-
-
-def build_data(
-    train_data_path: Path,
-    eval_data_path: Path,
-    cache_dir: Path,
-    train_batch_size: int,
-    eval_batch_size: int,
-    num_workers: int,
-):
-    dataset = load_dataset(
-        "parquet",
-        data_files={
-            "train": str(train_data_path),
-            "eval": str(eval_data_path),
-        },
-        cache_dir=str(cache_dir),
-    )
-    train_dataset = dataset["train"].to_tf_dataset(
-        train_batch_size,
-        shuffle=True,
-        drop_remainder=True,
-        prefetch=True,
-        columns=COLUMNS,
-        label_cols="label",
-        num_workers=num_workers,
-    )
-    eval_dataset = dataset["eval"].to_tf_dataset(
-        eval_batch_size,
-        shuffle=False,
-        drop_remainder=False,
-        prefetch=True,
-        columns=COLUMNS,
-        label_cols="label",
-        num_workers=num_workers,
-    )
-    return train_dataset, eval_dataset
 
 
 def get_train_func(
@@ -131,8 +106,8 @@ def get_eval_func(
 
 def main():
     config = read_configs()
-    train_data_path = config.data_dir / config.train_data
-    eval_data_path = config.data_dir / config.eval_data
+    train_data_path = config.data_dir / config.write_format / config.train_data
+    eval_data_path = config.data_dir / config.write_format / config.eval_data
     cache_dir = config.data_dir / "huggingface"
 
     strategy = setup_strategy(config)
@@ -143,20 +118,27 @@ def main():
 
     train_data_size = get_data_size(train_data_path)
     eval_data_size = get_data_size(eval_data_path)
-    print(f"===== train size: {train_data_size}, eval size: {eval_data_size} =====")
+    print(f"===== train size: {train_data_size:,}, eval size: {eval_data_size:,} =====")
     print(f"===== num devices: {n_replicas} =====\n")
 
     tf.random.set_seed(config.seed)
-    train_data, eval_data = build_data(
-        train_data_path,
-        eval_data_path,
-        cache_dir,
-        train_batch_size,
-        eval_batch_size,
-        num_workers,
-    )
-    train_dist_data = DistDataset(strategy, train_data)
-    eval_dist_data = DistDataset(strategy, eval_data)
+    if config.write_format == "tfrecord":
+        train_data, eval_data = read_tfrecord_data(
+            train_data_path, eval_data_path, train_batch_size, eval_batch_size
+        )
+    else:
+        train_data, eval_data = read_parquet_data(
+            train_data_path,
+            eval_data_path,
+            cache_dir,
+            train_batch_size,
+            eval_batch_size,
+            num_workers,
+        )
+    n_train_steps = train_data_size // train_batch_size
+    n_eval_steps = math.ceil(eval_data_size / eval_batch_size)
+    train_dist_data = DistDataset(strategy, train_data, n_train_steps)
+    eval_dist_data = DistDataset(strategy, eval_data, n_eval_steps)
 
     with strategy.scope():
         model = TwoTower(config.size_map, config.embed_dim)

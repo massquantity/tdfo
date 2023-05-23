@@ -1,22 +1,10 @@
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict
+from typing import Dict, Literal
 
 import polars as pl
 import tomli
-
-COLUMNS = [
-    "user_id",
-    "item_id",
-    "language",
-    "is_ebook",
-    "format",
-    "publisher",
-    "pub_decade",
-    "avg_rating",
-    "num_pages",
-]
 
 
 @dataclass
@@ -24,6 +12,7 @@ class Config:
     data_dir: Path
     train_data: str
     eval_data: str
+    write_format: Literal["tfrecord", "parquet"]
     num_workers: int
     size_map: Dict[str, int]
     n_epochs: int
@@ -44,9 +33,15 @@ def read_configs() -> Config:
     size_map = Path.read_text(config["data_dir"] / "size_map.json")
     config["size_map"] = json.loads(size_map)
     config["jit_xla"] = config["jit_xla"] or None
+    assert config["write_format"] in ("tfrecord", "parquet")
     return Config(**config)
 
 
-def get_data_size(data_path: str) -> int:
-    data = pl.scan_parquet(data_path)
-    return data.select(pl.count()).collect(streaming=True).item()
+def get_data_size(data_path: Path) -> int:
+    if str(data_path).endswith("tfrecord"):
+        name = "train" if "train" in str(data_path) else "eval"
+        path = data_path.parent / f"{name}_data_size.json"
+        return json.loads(path.read_text())[f"{name}_data_size"]
+    else:
+        data = pl.scan_parquet(data_path)
+        return data.select(pl.count()).collect(streaming=True).item()
