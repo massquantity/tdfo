@@ -115,6 +115,9 @@ def main():
     train_batch_size = config.per_device_train_batch_size * n_replicas
     eval_batch_size = config.per_device_eval_batch_size * n_replicas
     num_workers = config.num_workers
+    # XLA does not work well for multi-gpus: https://github.com/tensorflow/tensorflow/issues/45940
+    if not config.use_tpu and n_replicas > 1:
+        config.jit_xla = False
 
     train_data_size = get_data_size(train_data_path)
     eval_data_size = get_data_size(eval_data_path)
