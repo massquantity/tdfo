@@ -42,8 +42,8 @@ class TwoTower(tf.keras.Model):
     def call(self, inputs, **kwargs):
         user_embeds = self.get_user_embeddings(inputs)
         item_embeds = self.get_item_embeddings(inputs)
-        # return (user_embeds * item_embeds).sum(axis=1)
-        return tf.einsum("ij,ij->i", user_embeds, item_embeds)
+        return tf.reduce_sum(user_embeds * item_embeds, axis=1)
+        # return tf.einsum("ij,ij->i", user_embeds, item_embeds)
 
     def get_user_embeddings(self, inputs):
         user_embeds = self.user_embed(inputs["user_id"])
