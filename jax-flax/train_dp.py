@@ -10,7 +10,7 @@ import polars as pl
 from datasets import Dataset, IterableDataset, load_dataset
 from flax.training.common_utils import get_metrics, shard
 from flax.training.train_state import TrainState
-from tqdm import trange
+from tqdm import tqdm
 
 from models import init_model
 from utils import read_configs
@@ -167,9 +167,10 @@ def main():
                 shuffle=True,
                 rng=train_rng,
             )
-        for _ in trange(n_train_steps, desc="Training..."):
-            batch = next(train_loader)
-            batch = shard(batch)
+
+        train_loader = map(shard, train_loader)
+        train_loader = flax.jax_utils.prefetch_to_device(train_loader, size=2)
+        for batch in tqdm(train_loader, total=n_train_steps, desc="Training..."):
             state, metrics = p_train_step(state, batch)
             train_metrics.append(metrics)
 
@@ -186,8 +187,8 @@ def main():
             eval_loader = data_loader(
                 dataset["eval"], eval_batch_size, drop_last_batch=False, shuffle=False
             )
-        for _ in trange(n_eval_steps, desc="Evaluating..."):
-            batch = next(eval_loader)
+
+        for batch in tqdm(eval_loader, total=n_eval_steps, desc="Evaluating..."):
             metrics = p_eval_step_pad(
                 state, batch, min_device_batch=config.per_device_eval_batch_size
             )
