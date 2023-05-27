@@ -195,7 +195,7 @@ def read_tfrecord_data(
     train_files = tf.data.TFRecordDataset.list_files(str(train_data_path), seed=42)
     train_dataset = (
         tf.data.TFRecordDataset(train_files, compression_type="GZIP", num_parallel_reads=8)
-        .shuffle(buffer_size=20000)
+        .shuffle(buffer_size=2_000_000)
         .batch(train_batch_size, drop_remainder=True)
         .map(_parse, num_parallel_calls=tf.data.AUTOTUNE)
         .prefetch(tf.data.AUTOTUNE)
