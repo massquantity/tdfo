@@ -115,9 +115,14 @@ def main():
     train_batch_size = config.per_device_train_batch_size * n_replicas
     eval_batch_size = config.per_device_eval_batch_size * n_replicas
     num_workers = config.num_workers
-    # XLA does not work well for multi-gpus: https://github.com/tensorflow/tensorflow/issues/45940
-    if not config.use_tpu and n_replicas > 1:
-        config.jit_xla = False
+    # `jit_compile` has a few issues:
+    # 1. XLA does not work well for multi-gpus:
+    # https://github.com/tensorflow/tensorflow/issues/45940
+    # 2. Since XLA compilation will be performed on TPU implicitly, set `jit_compile=True` may lead to strange behavior:
+    # https://huggingface.co/docs/transformers/main/perf_train_tpu_tf#i-keep-hearing-about-this-xla-thing-whats-xla-and-how-does-it-relate-to-tpus
+    # https://github.com/keras-team/keras-nlp/issues/443
+    if config.use_tpu or n_replicas > 1:
+        config.jit_xla = None
 
     train_data_size = get_data_size(train_data_path)
     eval_data_size = get_data_size(eval_data_path)

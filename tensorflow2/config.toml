@@ -6,7 +6,7 @@ num_workers = 2
 
 n_epochs = 10
 learning_rate = 3e-4
-weight_decay = 0.0
+weight_decay = 1e-4
 embed_dim = 16
 per_device_train_batch_size = 2048
 per_device_eval_batch_size = 2048
