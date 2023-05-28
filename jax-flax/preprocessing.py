@@ -11,7 +11,7 @@ import polars as pl
 from utils import read_configs
 
 SPLIT_RATIO = 0.8
-JOIN_UNIT = int(5e7)
+FILE_NUM = 8
 
 DTYPES = {
     "user_id": pl.Int32,
@@ -35,6 +35,40 @@ FINAL_COLUMNS = [
     "is_reviewed",
     "label",
 ]
+
+
+def read_original_data(data_dir: Path) -> pl.DataFrame:
+    """Read and transform data based on the following steps:
+
+    1. Only keep users with 10 to 250 interactions.
+    2. Convert rating >= 4 to label 1, and rating < 4 to label 0.
+    3. Sort `book_id` for every user for further data splitting.
+    """
+    data = pl.scan_csv(data_dir / "goodreads_interactions.csv", dtypes=DTYPES)
+    data = (
+        data.filter(
+            (
+                (pl.col("book_id").count().over("user_id") >= 10)
+                & (pl.col("book_id").count().over("user_id") <= 250)
+            ).alias("num_interactions")
+        )
+        .with_columns(
+            pl.when(pl.col("rating") >= 4)
+            .then(1)
+            .otherwise(0)
+            .alias("label")
+            .cast(pl.Int8)
+        )
+        .drop("rating")
+    ).collect(streaming=True)
+    data = data.select(
+        "user_id",
+        pl.col("book_id").sort().over("user_id"),
+        "label",
+        "is_read",
+        "is_reviewed",
+    )
+    return data
 
 
 def publication_year_to_decade() -> pl.Expr:
@@ -186,11 +220,12 @@ def split_train_test(interaction: pl.Series, ratio: float, is_train: bool) -> pl
     )
 
 
-def split_data(data: pl.LazyFrame, is_train: bool) -> pl.DataFrame:
+def split_data(data: pl.DataFrame, is_train: bool) -> pl.DataFrame:
     """Split interaction items for each user then flatten lists."""
     col_name = "train_interactions" if is_train else "eval_interactions"
     return (
-        data.groupby("user_id")
+        data.lazy()
+        .groupby("user_id")
         .agg(
             pl.col("book_id")
             .apply(lambda x: split_train_test(x, SPLIT_RATIO, is_train=is_train))
@@ -204,34 +239,34 @@ def split_data(data: pl.LazyFrame, is_train: bool) -> pl.DataFrame:
 
 def write_parquet_data(
     data_dir: Path,
-    interaction_data: pl.LazyFrame,
+    data: pl.DataFrame,
     original_data: pl.DataFrame,
     book_features: pl.DataFrame,
-    is_train: bool,
+    prefix: str,
 ):
-    """Split interactions and join with original data and book features."""
-    prefix = "train" if is_train else "eval"
-    shuffle = True if is_train else False
-    start = time.perf_counter()
-    interaction_data = split_data(interaction_data, is_train=is_train)
-    print(f"{prefix} split finished in {(time.perf_counter() - start):.2f}s")
-    print(f"{prefix} data size: {len(interaction_data)}")
-    for i, offset in enumerate(range(0, len(original_data), JOIN_UNIT)):
+    """Divide data to multiple parts by joining with original data and book features."""
+    write_dir = data_dir / "parquet"
+    Path.mkdir(write_dir, exist_ok=True)
+    file_unit = math.ceil(len(original_data) / FILE_NUM)
+    for i, offset in enumerate(range(0, len(original_data), file_unit), start=1):
         print(f"writing {prefix} part_{i}...")
         start = time.perf_counter()
-        part = interaction_data.join(
-            original_data.slice(offset, JOIN_UNIT),
+        part = data.join(
+            original_data.slice(offset, file_unit),
             on=["user_id", "book_id"],
             how="left",
         ).drop_nulls()
-        if shuffle:
+
+        if prefix == "train":
+            print("shuffling...")
             part = part.sample(fraction=1.0, shuffle=True, seed=42)
+
         part = (
             part.join(book_features, on="book_id", how="left")
             .rename({"book_id": "item_id"})
             .select(FINAL_COLUMNS)
         )
-        part.write_parquet(data_dir / f"{prefix}_part_{i}.parquet")
+        part.write_parquet(write_dir / f"{prefix}_part_{i}.parquet")
         print(f"{prefix} part_{i} finished in {(time.perf_counter() - start):.2f}s")
 
 
@@ -245,24 +280,24 @@ def main():
     book_features, size_map = get_book_info(config.data_dir)
     write_size_map(config.data_dir, size_map)
 
-    data = (
-        pl.read_csv(config.data_dir / "goodreads_interactions.csv", dtypes=DTYPES)
-        .with_columns(
-            pl.when(pl.col("rating") >= 4)
-            .then(1)
-            .otherwise(0)
-            .alias("label")
-            .cast(pl.Int8)
-        )
-        .drop("rating")
+    interaction_data = read_original_data(config.data_dir)
+    print(f"data size: {pl.count(interaction_data['user_id']):,}")
+
+    start_split = time.perf_counter()
+    train_data = split_data(interaction_data, is_train=True)
+    print(f"train split finished in {(time.perf_counter() - start_split):.2f}s")
+    print(f"train data size: {len(train_data):,}\n")
+    write_parquet_data(
+        config.data_dir, train_data, interaction_data, book_features, prefix="train"
     )
-    print(f"data size: {pl.count(data['user_id'])}")
-    # only keep users with more than 10 interactions
-    lazy_data = data.lazy().filter(
-        pl.col("book_id").count().over("user_id").alias("num_interactions") >= 10
+
+    start_split = time.perf_counter()
+    eval_data = split_data(interaction_data, is_train=False)
+    print(f"\neval split finished in {(time.perf_counter() - start_split):.2f}s")
+    print(f"eval data size: {len(eval_data):,}")
+    write_parquet_data(
+        config.data_dir, eval_data, interaction_data, book_features, prefix="eval"
     )
-    write_parquet_data(config.data_dir, lazy_data, data, book_features, is_train=True)
-    write_parquet_data(config.data_dir, lazy_data, data, book_features, is_train=False)
 
 
 if __name__ == "__main__":
