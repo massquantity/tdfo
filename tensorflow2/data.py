@@ -37,7 +37,7 @@ def read_original_data(data_dir: Path) -> pl.DataFrame:
     """Read and transform data based on the following steps:
 
     1. Only keep users with 10 to 250 interactions.
-    2. Convert to rating >= 4 to label 1, and rating < 4 to label 0.
+    2. Convert rating >= 4 to label 1, and rating < 4 to label 0.
     3. Sort `book_id` for every user for further data splitting.
     """
     data = pl.scan_csv(data_dir / "goodreads_interactions.csv", dtypes=DTYPES)
