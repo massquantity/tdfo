@@ -20,6 +20,7 @@ class Config:
     embed_dim: int
     per_device_train_batch_size: int
     per_device_eval_batch_size: int
+    mixed_precision: bool
     seed: int
 
 

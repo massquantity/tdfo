@@ -9,6 +9,7 @@ Before running, one should set some hyperparameters in [config.toml](https://git
 + `weight_decay`: Weight decay value in the [AdamW](https://www.tensorflow.org/api_docs/python/tf/keras/optimizers/AdamW) optimizer.
 + `per_device_train_batch_size`: Training batch size in each device. The total training batch size would be `per_device_train_batch_size * num_devices`.
 + `per_device_eval_batch_size`: Evaluation batch size in each device.
++ `mixed_precision`: Whether to use mixed precision during training, which can only be used in `train_dp.py`.
 
 
 
