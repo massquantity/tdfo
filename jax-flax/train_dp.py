@@ -1,3 +1,4 @@
+import functools
 import math
 from typing import Dict, Optional
 
@@ -8,8 +9,9 @@ import numpy as np
 import optax
 import polars as pl
 from datasets import Dataset, IterableDataset, load_dataset
+from flax.training import train_state
 from flax.training.common_utils import get_metrics, shard
-from flax.training.train_state import TrainState
+from flax.training.dynamic_scale import DynamicScale
 from tqdm import tqdm
 
 from models import init_model
@@ -19,16 +21,25 @@ from utils import read_configs
 # os.environ["XLA_FLAGS"] = "--xla_force_host_platform_device_count=8"
 
 
+# noinspection PyAbstractClass
+class TrainState(train_state.TrainState):
+    dynamic_scale: DynamicScale
+
+
 def create_train_state(
     rng: jax.random.PRNGKey,
     size_map: dict,
     learning_rate: float,
     weight_decay: float,
     embed_dim: int,
+    mixed_precision: bool
 ):
-    model, params = init_model(rng, size_map, embed_dim)
+    model, params = init_model(rng, size_map, embed_dim, mixed_precision)
     optimizer = optax.adamw(learning_rate=learning_rate, weight_decay=weight_decay)
-    return TrainState.create(apply_fn=model.apply, params=params, tx=optimizer)
+    dynamic_scale = DynamicScale() if mixed_precision else None
+    return TrainState.create(
+        apply_fn=model.apply, params=params, tx=optimizer, dynamic_scale=dynamic_scale
+    )
 
 
 def train_step(state: TrainState, batch: Dict[str, jnp.ndarray]):
@@ -38,11 +49,34 @@ def train_step(state: TrainState, batch: Dict[str, jnp.ndarray]):
         loss = jnp.mean(optax.sigmoid_binary_cross_entropy(logits, labels))
         return loss
 
-    grad_fn = jax.value_and_grad(loss_fn)
-    loss, grads = grad_fn(state.params)
-    grads = jax.lax.pmean(grads, axis_name="batch")
+    dynamic_scale = state.dynamic_scale
+    if dynamic_scale:
+        grad_fn = dynamic_scale.value_and_grad(loss_fn, axis_name="batch")
+        # dynamic loss takes care of averaging gradients across replicas
+        dynamic_scale, is_finite_grads, loss, grads = grad_fn(state.params)
+    else:
+        grad_fn = jax.value_and_grad(loss_fn)
+        loss, grads = grad_fn(state.params)
+        grads = jax.lax.pmean(grads, axis_name="batch")
+
     new_state = state.apply_gradients(grads=grads)
     metrics = jax.lax.pmean({"loss": loss}, axis_name="batch")
+    if dynamic_scale:
+        # noinspection PyUnboundLocalVariable
+        new_state = new_state.replace(
+            opt_state=jax.tree_util.tree_map(
+                functools.partial(jnp.where, is_finite_grads),
+                new_state.opt_state,
+                state.opt_state,
+            ),
+            params=jax.tree_util.tree_map(
+                functools.partial(jnp.where, is_finite_grads),
+                new_state.params,
+                state.params,
+            ),
+            dynamic_scale=dynamic_scale,
+        )
+        # jax.debug.print("scale: {}", dynamic_scale.scale)
     return new_state, metrics
 
 
@@ -93,7 +127,7 @@ def lazy_data_loader(
     # iter_dataset = dataset.to_iterable_dataset(num_shards=1024)
     # print("data num shards: ", iter_dataset.n_shards)
     if shuffle:
-        dataset = dataset.shuffle(seed, buffer_size=20000)
+        dataset = dataset.shuffle(seed, buffer_size=2_000_000)
         dataset.set_epoch(epoch)
     for batch in dataset.iter(batch_size, drop_last_batch=drop_last_batch):
         yield {k: np.array(v) for k, v in batch.items()}
@@ -106,15 +140,15 @@ def get_data_size(data_path: str):
 
 def main():
     config = read_configs()
-    train_data_path = config.data_dir / config.train_data
-    eval_data_path = config.data_dir / config.eval_data
+    train_data_path = config.data_dir / "parquet" / config.train_data
+    eval_data_path = config.data_dir / "parquet" / config.eval_data
     cache_dir = config.data_dir / "huggingface"
     train_batch_size = config.per_device_train_batch_size * jax.device_count()
     eval_batch_size = config.per_device_eval_batch_size * jax.device_count()
 
     train_data_size = get_data_size(train_data_path)
     eval_data_size = get_data_size(eval_data_path)
-    print(f"===== train size: {train_data_size}, eval size: {eval_data_size} =====")
+    print(f"===== train size: {train_data_size:,}, eval size: {eval_data_size:,} =====")
     print(f"===== num devices: {jax.device_count()} =====\n")
 
     dataset = load_dataset(
@@ -136,6 +170,7 @@ def main():
         config.learning_rate,
         config.weight_decay,
         config.embed_dim,
+        config.mixed_precision,
     )
 
     p_train_step = jax.pmap(train_step, axis_name="batch", donate_argnums=(0,))

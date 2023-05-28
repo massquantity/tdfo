@@ -14,25 +14,45 @@ class TwoTower(nn.Module):
 
     def setup(self):
         self.user_embed = nn.Embed(
-            self.size_map["user"], self.embed_dim, embedding_init=self.init_fn
+            self.size_map["user"],
+            self.embed_dim,
+            dtype=self.dtype,
+            embedding_init=self.init_fn,
         )
         self.item_embed = nn.Embed(
-            self.size_map["item"], self.embed_dim, embedding_init=self.init_fn
+            self.size_map["item"],
+            self.embed_dim,
+            dtype=self.dtype,
+            embedding_init=self.init_fn,
         )
         self.language_embed = nn.Embed(
-            self.size_map["language"], self.embed_dim, embedding_init=self.init_fn
+            self.size_map["language"],
+            self.embed_dim,
+            dtype=self.dtype,
+            embedding_init=self.init_fn,
         )
         self.is_ebook_embed = nn.Embed(
-            self.size_map["is_ebook"], self.embed_dim, embedding_init=self.init_fn
+            self.size_map["is_ebook"],
+            self.embed_dim,
+            dtype=self.dtype,
+            embedding_init=self.init_fn,
         )
         self.format_embed = nn.Embed(
-            self.size_map["format"], self.embed_dim, embedding_init=self.init_fn
+            self.size_map["format"],
+            self.embed_dim,
+            dtype=self.dtype,
+            embedding_init=self.init_fn,
         )
         self.publisher_embed = nn.Embed(
-            self.size_map["publisher"], self.embed_dim, embedding_init=self.init_fn
+            self.size_map["publisher"],
+            self.embed_dim, dtype=self.dtype,
+            embedding_init=self.init_fn,
         )
         self.pub_decade_embed = nn.Embed(
-            self.size_map["pub_decade"], self.embed_dim, embedding_init=self.init_fn
+            self.size_map["pub_decade"],
+            self.embed_dim,
+            dtype=self.dtype,
+            embedding_init=self.init_fn,
         )
         self.user_fc1 = nn.Dense(
             self.embed_dim, dtype=self.dtype, kernel_init=self.init_fn
@@ -80,7 +100,12 @@ class TwoTower(nn.Module):
         return self.item_fc2(self.activation(self.item_fc1(item_repr)))
 
 
-def init_model(rng: jax.random.PRNGKey, size_map: dict, embed_dim: int):
+def init_model(
+    rng: jax.random.PRNGKey,
+    size_map: dict,
+    embed_dim: int,
+    mixed_precision: bool = False,
+):
     init_inputs = {
         "user_id": jnp.ones(1, dtype=jnp.int32),
         "item_id": jnp.ones(1, dtype=jnp.int32),
@@ -92,9 +117,22 @@ def init_model(rng: jax.random.PRNGKey, size_map: dict, embed_dim: int):
         "avg_rating": jnp.ones(1, dtype=jnp.float32),
         "num_pages": jnp.ones(1, dtype=jnp.float32),
     }
-    model = TwoTower(size_map, embed_dim)
+    compute_dtype = get_dtype(mixed_precision)
+    model = TwoTower(size_map, embed_dim, dtype=compute_dtype)
     params = model.init(rng, init_inputs)["params"]
     return model, params
+
+
+def get_dtype(mixed_precision: bool):
+    platform = jax.local_devices()[0].platform
+    if mixed_precision:
+        if platform == "tpu":
+            dtype = jnp.bfloat16
+        else:
+            dtype = jnp.float16
+    else:
+        dtype = jnp.float32
+    return dtype
 
 
 def _visualize_model_layers(model: nn.Module, inputs: Any):

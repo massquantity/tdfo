@@ -81,7 +81,7 @@ def lazy_data_loader(
     # iter_dataset = dataset.to_iterable_dataset(num_shards=1024)
     # print("data num shards: ", iter_dataset.n_shards)
     if shuffle:
-        dataset = dataset.shuffle(seed, buffer_size=20000)
+        dataset = dataset.shuffle(seed, buffer_size=2_000_000)
         dataset.set_epoch(epoch)
     for batch in dataset.iter(batch_size, drop_last_batch=False):
         yield {k: np.array(v) for k, v in batch.items()}
@@ -94,13 +94,13 @@ def get_data_size(data_path: str):
 
 def main():
     config = read_configs()
-    train_data_path = config.data_dir / config.train_data
-    eval_data_path = config.data_dir / config.eval_data
+    train_data_path = config.data_dir / "parquet" / config.train_data
+    eval_data_path = config.data_dir / "parquet" / config.eval_data
     cache_dir = config.data_dir / "huggingface"
 
     train_data_size = get_data_size(train_data_path)
     eval_data_size = get_data_size(eval_data_path)
-    print(f"===== train size: {train_data_size}, eval size: {eval_data_size} =====\n")
+    print(f"===== train size: {train_data_size:,}, eval size: {eval_data_size:,} =====\n")
 
     dataset = load_dataset(
         "parquet",
