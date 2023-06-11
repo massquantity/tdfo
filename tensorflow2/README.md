@@ -10,6 +10,7 @@ Before running, one should set some hyperparameters in [config.toml](https://git
 + `weight_decay`: Weight decay value in the [AdamW](https://www.tensorflow.org/api_docs/python/tf/keras/optimizers/AdamW) optimizer.
 + `per_device_train_batch_size`: Training batch size in each device. The total training batch size would be `per_device_train_batch_size * num_devices`.
 + `per_device_eval_batch_size`: Evaluation batch size in each device.
++ `steps_per_execution`: The number of batches to run during each `tf.function` call.
 + `jit_xla`: Whether to compile the model training step with [XLA](https://www.tensorflow.org/xla), which *may* speed up training multiple times.
 + `use_tpu`: Whether to use Google Cloud TPU for training if available.
 
@@ -54,5 +55,13 @@ Run the `train_dp.py` script if you are using multiple GPUs or TPU. `dp` stands 
 
 ```shell
 $ python train_dp.py
+```
+
+Run the `train_ps.py` script if you want to train with [*parameter server*](https://www.tensorflow.org/tutorials/distribute/parameter_server_training).
+You also need to modify [cluster.json](https://github.com/massquantity/tdfo/blob/main/tensorflow2/cluster.json) in each machine. 
+For more details, see [Multi-worker configuration](https://www.tensorflow.org/tutorials/distribute/multi_worker_with_keras#multi-worker_configuration).
+
+```shell
+$ python train_ps.py
 ```
 

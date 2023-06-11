@@ -10,6 +10,7 @@ weight_decay = 1e-4
 embed_dim = 16
 per_device_train_batch_size = 2048
 per_device_eval_batch_size = 2048
+steps_per_execution = 1
 seed = 42
 
 jit_xla = true

@@ -21,6 +21,7 @@ class Config:
     embed_dim: int
     per_device_train_batch_size: int
     per_device_eval_batch_size: int
+    steps_per_execution: int
     jit_xla: bool
     seed: int
     use_tpu: bool
