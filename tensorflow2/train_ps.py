@@ -42,10 +42,15 @@ def create_in_process_cluster(cluster_spec, num_workers, num_ps):
 
 def setup_strategy():
     cluster_dict = json.loads((Path(".").absolute() / "cluster.json").read_text())
-    cluster_spec = tf.train.ClusterSpec(cluster_dict["cluster"])
     num_workers = len(cluster_dict["cluster"]["worker"])
     num_ps = len(cluster_dict["cluster"]["ps"])
-    cluster_resolver = create_in_process_cluster(cluster_spec, num_workers, num_ps)
+    if os.environ.get("local_debug") is not None:
+        cluster_spec = tf.train.ClusterSpec(cluster_dict["cluster"])
+        cluster_resolver = create_in_process_cluster(cluster_spec, num_workers, num_ps)
+    else:
+        os.environ["TF_CONFIG"] = json.dumps(cluster_dict)
+        print(os.environ["TF_CONFIG"])
+        cluster_resolver = tf.distribute.cluster_resolver.TFConfigClusterResolver()
 
     variable_partitioner = tf.distribute.experimental.partitioners.MinSizePartitioner(
         min_shard_bytes=(256 << 10),
@@ -94,9 +99,11 @@ def build_data(data_path: Path, global_batch_size: int, shuffle: bool = False):
         dataset = dataset.prefetch(tf.data.AUTOTUNE)
         return dataset
 
-    input_options = tf.distribute.InputOptions(
-        experimental_fetch_to_device=True, experimental_per_replica_buffer_size=2
-    )
+    input_options = None
+    if os.environ.get("local_debug") is None:
+        input_options = tf.distribute.InputOptions(
+            experimental_fetch_to_device=True, experimental_per_replica_buffer_size=2
+        )
     data = tf.keras.utils.experimental.DatasetCreator(dataset_fn, input_options)
     return data
 
@@ -138,11 +145,23 @@ def main():
     with strategy.scope():
         model = build_model(config)
 
+    working_dir = Path(".").absolute()
+    log_dir = working_dir / "log"
+    ckpt_filepath = working_dir / "ckpt"
+    backup_dir = working_dir / "backup"
+
+    callbacks = [
+        tf.keras.callbacks.TensorBoard(log_dir=log_dir),
+        tf.keras.callbacks.ModelCheckpoint(filepath=ckpt_filepath),
+        tf.keras.callbacks.BackupAndRestore(backup_dir=backup_dir),
+    ]
+
     model.fit(
         train_data,
         epochs=config.n_epochs,
         validation_data=eval_data,
         steps_per_epoch=n_train_steps,
+        callbacks=callbacks,
     )
 
 

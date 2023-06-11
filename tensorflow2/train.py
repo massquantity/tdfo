@@ -14,6 +14,7 @@ def build_model(config: Config):
         optimizer=optimizer,
         metrics=[tf.keras.metrics.AUC(curve="ROC", from_logits=True)],
         jit_compile=config.jit_xla,
+        steps_per_execution=config.steps_per_execution,
     )
     return model
 
