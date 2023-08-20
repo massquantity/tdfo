@@ -1,0 +1,18 @@
+data_dir = "/data"
+train_data = "ratings.dat"
+# eval_data = "eval_part_*.parquet"
+# streaming = true
+
+n_epochs = 10
+learning_rate = 3e-4
+weight_decay = 1e-4
+embed_dim = 16
+n_heads = 2
+n_layers = 2
+max_len = 20
+sliding_step = 10
+mask_prob = 0.2
+per_device_train_batch_size = 2048
+# per_device_eval_batch_size = 2048
+# mixed_precision = false
+seed = 42
