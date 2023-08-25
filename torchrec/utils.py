@@ -29,4 +29,5 @@ def read_configs() -> Config:
     toml_str = (Path(__file__).parent / "config.toml").read_text()
     config = tomli.loads(toml_str)
     config["data_dir"] = Path(config["data_dir"]).absolute()
+    assert config["max_len"] >= config["sliding_step"]
     return Config(**config)
