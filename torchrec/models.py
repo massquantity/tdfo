@@ -94,7 +94,7 @@ class SublayerConnection(nn.Module):
         size: int,
         dropout: float,
         device: Optional[torch.device] = None,
-    ) -> None:
+    ):
         super().__init__()
         self.norm = nn.LayerNorm(size, device=device)
         self.dropout = nn.Dropout(dropout)
@@ -113,7 +113,7 @@ class TransformerBlock(nn.Module):
         num_heads: int,
         dropout: float,
         device: Optional[torch.device] = None,
-    ) -> None:
+    ):
         super().__init__()
         self.attention = MultiHeadedAttention(num_heads, embed_dim, dropout, device)
         self.feed_forward = FeedForward(embed_dim, dropout, device)
@@ -141,7 +141,9 @@ class HistoryArch(torch.nn.Module):
         super().__init__()
         self.embed_dim = embed_dim
         self.history_len = history_len
-        self.positional_encoding = nn.Parameter(torch.randn(history_len, embed_dim, device=device))
+        self.positional_encoding = nn.Parameter(
+            torch.randn(history_len, embed_dim, device=device)
+        )
         self.layernorm = nn.LayerNorm([history_len, embed_dim], device=device)
         self.dropout = nn.Dropout(p=dropout)
 
@@ -186,7 +188,7 @@ class Bert4Rec(nn.Module):
         num_layers: int,
         dropout: float = 0.1,
         device: Optional[torch.device] = None,
-    ) -> None:
+    ):
         super().__init__()
         self.vocab_size = vocab_size
         self.emb_dim = embed_dim
@@ -195,7 +197,6 @@ class Bert4Rec(nn.Module):
         self.history = HistoryArch(
             vocab_size, max_len, embed_dim, dropout=dropout, device=device
         )
-
         self.transformer_blocks = nn.ModuleList(
             [
                 TransformerBlock(embed_dim, num_heads, dropout, device=device)

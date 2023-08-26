@@ -1,4 +1,4 @@
-from typing import Any, Dict, Tuple
+from typing import Tuple
 
 import pandas as pd
 import torch
@@ -15,7 +15,7 @@ class TrainDataset(torch.utils.data.Dataset):
 
     def __getitem__(self, index: int) -> Tuple[torch.LongTensor, torch.LongTensor]:
         row = self.train_set.iloc[index]
-        return torch.LongTensor(row["seqs"]), torch.LongTensor(row["labels"])
+        return torch.LongTensor(row["train_interactions"]), torch.LongTensor(row["labels"])
 
 
 class EvalDataset(torch.utils.data.Dataset):
@@ -25,36 +25,28 @@ class EvalDataset(torch.utils.data.Dataset):
     def __len__(self) -> int:
         return len(self.eval_set)
 
-    def __getitem__(self, index: int) -> Tuple[torch.LongTensor, torch.LongTensor, torch.LongTensor]:
+    def __getitem__(self, index: int) -> Tuple[torch.LongTensor, torch.LongTensor]:
         row = self.eval_set.iloc[index]
-
-        return (
-            torch.LongTensor(row["seqs"]),
-            torch.LongTensor(row["candidates"]),
-            torch.LongTensor(row["labels"]),
-        )
+        return torch.LongTensor(row["eval_seqs"]), torch.LongTensor(row["candidate_items"])
 
 
 class Bert4RecDataLoader:
     def __init__(
         self,
-        dataset: Dict[str, Any],
+        train_data: pd.DataFrame,
+        eval_data: pd.DataFrame,
         train_batch_size: int,
         eval_batch_size: int,
-        test_batch_size: int,
     ):
-        self.train_data = dataset["train"]
-        self.eval_data = dataset["val"]
-        self.test_data = dataset["test"]
+        self.train_data = train_data
+        self.eval_data = eval_data
         self.train_batch_size = train_batch_size
         self.eval_batch_size = eval_batch_size
-        self.test_batch_size = test_batch_size
 
     def get_pytorch_dataloaders(self, rank: int, world_size: int):
         train_loader = self._get_train_loader(rank, world_size)
         val_loader = self._get_eval_loader(rank, world_size)
-        test_loader = self._get_test_loader(rank, world_size)
-        return train_loader, val_loader, test_loader
+        return train_loader, val_loader
 
     def _get_train_loader(self, rank: int, world_size: int):
         sampler = DistributedSampler(
@@ -83,22 +75,6 @@ class Bert4RecDataLoader:
         dataloader = DataLoader(
             EvalDataset(self.eval_data),
             batch_size=self.eval_batch_size,
-            pin_memory=True,
-            sampler=sampler,
-        )
-        return dataloader
-
-    def _get_test_loader(self, rank: int, world_size: int):
-        sampler = DistributedSampler(
-            TrainDataset(self.test_data),
-            num_replicas=world_size,
-            rank=rank,
-            shuffle=False,
-            drop_last=False,
-        )
-        dataloader = DataLoader(
-            EvalDataset(self.test_data),
-            batch_size=self.test_batch_size,
             pin_memory=True,
             sampler=sampler,
         )
