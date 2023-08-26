@@ -180,8 +180,8 @@ def gen_sliding_seq(df: pl.DataFrame, seq_len: int, sliding_step: int) -> pl.Dat
     total_users, total_items, total_labels = [], [], []
     for user, seqs, lbs in zip(user_ids, item_ids, labels):
         pad_len = _get_pad_size(seqs, seq_len, sliding_step)
-        padded_seqs = np.append(seqs, ([0] * pad_len))
-        padded_labels = np.append(lbs, ([0] * pad_len))
+        padded_seqs = np.append(seqs, ([PAD_ID] * pad_len))
+        padded_labels = np.append(lbs, ([PAD_ID] * pad_len))
         for i in range(0, len(seqs), sliding_step):
             total_users.append(user)
             total_items.append(padded_seqs[i : i + seq_len])
