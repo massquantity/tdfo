@@ -108,35 +108,40 @@ def split_data(df: pl.DataFrame) -> pl.DataFrame:
     ).collect()
 
 
+def add_last_item_mask(df: pl.DataFrame) -> pl.DataFrame:
+    """Add mask for last item in every sequence based on the paper."""
+    seq_lens = df.select(pl.col("train_interactions").list.lengths().alias("seq_lens"))
+    last_item_indices = seq_lens.to_series().cumsum().to_numpy() - 1
+    data = df.select("user_id", "train_interactions").explode("train_interactions")
+    indices = np.zeros(len(data), dtype=np.int32)
+    indices[last_item_indices] = -1
+    return data.with_columns(last_item_mask=pl.lit(indices))
+
+
 def gen_train_mask_data(
-    df: pl.DataFrame, n_items: int, mask_prob: float, rng: np.random.Generator
+    df: pl.DataFrame, mask_prob: float, rng: np.random.Generator
 ) -> pl.DataFrame:
     """Bert-like data masking.
 
-    Items with probability of `mask_prob` are masked as MASK_ID
-    and probability of `mask_prob * 0.2` are masked as random items.
+    Items with probability of `mask_prob` are masked as MASK_ID.
+    According to the paper, last items in sequence are also masked.
 
     Labels are the original items if masking else PAD_ID,
     and grads of PAD_ID will be ignored in `nn.CrossEntropyLoss`
     """
-    random_item_prob = mask_prob * 0.2
-    data = df.select("user_id", "train_interactions").explode("train_interactions")
+    data = add_last_item_mask(df)
     data = data.lazy().with_columns(
         mask_prob_col=pl.lit(rng.random(size=len(data), dtype=np.float32)),
-        random_items_col=pl.lit(
-            rng.integers(1, n_items + 1, size=len(data), dtype=np.int32)
-        ),
     )
+    mask_condition = (pl.col("mask_prob_col") <= mask_prob) | (pl.col("last_item_mask") == -1)  # fmt: skip
     masked_items_col = (
-        pl.when(pl.col("mask_prob_col") < random_item_prob)
-        .then(pl.col("random_items_col"))
-        .when(pl.col("mask_prob_col") <= mask_prob)
+        pl.when(mask_condition)
         .then(pl.lit(MASK_ID, dtype=pl.Int32))
         .otherwise(pl.col("train_interactions"))
         .alias("train_interactions")
     )
     label_col = (
-        pl.when(pl.col("mask_prob_col") <= mask_prob)
+        pl.when(mask_condition)
         .then(pl.col("train_interactions"))
         .otherwise(pl.lit(PAD_ID, dtype=pl.Int32))
         .alias("labels")
@@ -170,6 +175,19 @@ def gen_sliding_seq_slow(
     )
     # explode nested list to list
     return data.explode(["train_interactions", "labels"]).collect()
+
+
+# def gen_sliding_seq_unstack(df: pl.DataFrame, seq_len: int) -> pl.DataFrame:
+#    data = df.unstack(step=seq_len, how="horizontal", fill_values=PAD_ID)
+#    user_col = [col for col in data.columns if "user" in col][0]
+#    item_cols = sorted([col for col in data.columns if "interactions" in col])
+#    label_cols = sorted([col for col in data.columns if "labels" in col])
+#    data = data.select(
+#        pl.col(user_col).alias("user_id"),
+#        pl.concat_list(item_cols).alias("train_interactions"),
+#        pl.concat_list(label_cols).alias("labels"),
+#    )
+#    return data
 
 
 def gen_sliding_seq(df: pl.DataFrame, seq_len: int, sliding_step: int) -> pl.DataFrame:
@@ -291,7 +309,7 @@ def main():
     # print(data.row(by_predicate=pl.col("user_id") == 1))
 
     start_time = time.perf_counter()
-    masked_train_data = gen_train_mask_data(data, n_items, config.mask_prob, np_rng)
+    masked_train_data = gen_train_mask_data(data, config.mask_prob, np_rng)
     print(f"total masked ratio: {get_masked_ratio(masked_train_data):.4f}")
     masked_seq_train_data = gen_sliding_seq(
         masked_train_data, config.max_len, config.sliding_step
