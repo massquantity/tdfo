@@ -45,8 +45,8 @@ def read_original_data(data_dir: Path) -> pl.DataFrame:
 
 def map_ids(df: pl.DataFrame) -> Tuple[pl.DataFrame, int, int]:
     def _get_sparse_mapping(col_name: str) -> dict:
-        unique_vals = sorted(df.select(pl.col(col_name).unique()).to_series().to_list())
-        mapping = dict(zip(unique_vals, range(1, len(unique_vals) + 1)))
+        unique_vals = df.select(pl.col(col_name).unique()).to_series().to_list()
+        mapping = dict(zip(sorted(unique_vals), range(1, len(unique_vals) + 1)))
         return mapping
 
     user_id_mapping = _get_sparse_mapping("user_id")
@@ -101,11 +101,12 @@ def split_data(df: pl.DataFrame) -> pl.DataFrame:
             pl.col("book_id").apply(_split_train_eval_test).alias("total_interactions")
         )
     )
-    return data.select(
+    data = data.select(
         "user_id",
         pl.col("total_interactions").list.get(0).alias("train_interactions"),
         pl.col("total_interactions").list.get(1).alias("eval_interactions"),
     ).collect()
+    return data
 
 
 def add_last_item_mask(df: pl.DataFrame) -> pl.DataFrame:
@@ -251,9 +252,51 @@ def sample_negatives(
     negative_samples = []
     for i in range(0, data_size, step):
         negs = rng.choice(items, step * EVAL_NEG_NUM, replace=False, p=probs)
-        negative_samples.extend(negs.tolist())
+        negative_samples.extend(negs)
     negative_samples = np.array(negative_samples[:total_size], dtype=np.int32)
     return negative_samples.reshape(data_size, EVAL_NEG_NUM)
+
+
+def sample_negs_without_pos(
+    df: pl.DataFrame,
+    rng: np.random.Generator,
+    items: np.ndarray,
+    probs: np.ndarray,
+) -> pl.Series:
+    """Sample `EVAL_NEG_NUM` negatives for each user and exclude items from training data."""
+    n_users = len(df)
+    pos_n_items = df.select(pl.col("train_interactions").list.lengths()).to_series()
+    total_size = pos_n_items.sum() + n_users * EVAL_NEG_NUM
+    # avoid exceeding total item num in `rng.choice`
+    step = len(items) // 5
+    all_negative_samples = []
+    for i in range(0, total_size, step):
+        negs = rng.choice(items, step, replace=False, p=probs)
+        all_negative_samples.extend(negs)
+
+    neg_indices = (pos_n_items + EVAL_NEG_NUM).cumsum().to_list()
+    negative_samples = np.split(all_negative_samples, neg_indices)[:-1]
+
+    data = (
+        df.lazy()
+        .with_columns(
+            positive_samples=pl.concat_list(
+                ["train_interactions", "eval_interactions"]
+            ),
+            negative_samples=pl.Series(
+                values=negative_samples, dtype=pl.List(pl.Int32)
+            ),
+        )
+        .select(
+            pl.col("negative_samples")
+            .list.set_difference("positive_samples")
+            .list.head(EVAL_NEG_NUM)
+            .alias("negatives")
+        )
+    )
+    # print(data.select(pl.col("negatives").list.lengths().sort()).collect())
+    data = data.collect().to_series()
+    return data
 
 
 def gen_eval_data(
@@ -264,9 +307,9 @@ def gen_eval_data(
     probs: np.ndarray,
 ) -> pl.DataFrame:
     data = get_eval_seqs(df.lazy(), seq_len, len(df))
-    negative_samples = sample_negatives(len(df), rng, items, probs)
-    data = data.with_columns(negative_samples=pl.lit(negative_samples, dtype=pl.Int32))
-    candidate_items = pl.concat_list(["eval_interactions", "negative_samples"])
+    # negative_samples = sample_negatives(len(df), rng, items, probs)
+    data = data.with_columns(neg_items=sample_negs_without_pos(df, rng, items, probs))
+    candidate_items = pl.concat_list(["eval_interactions", "neg_items"])
     return data.select(
         "user_id", "eval_seqs", candidate_items.alias("candidate_items")
     ).collect()
