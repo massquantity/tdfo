@@ -14,7 +14,7 @@ MAX_INTERACTIONS = 200
 PAD_ID = 0
 MASK_ID = -1  # set when n_items is available
 EVAL_NEG_NUM = 100  # follow the paper setting
-FILE_NUM = 1
+FILE_NUM = 2
 
 DTYPES = {
     "user_id": pl.Int32,
