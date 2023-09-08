@@ -10,7 +10,6 @@ class Config:
     data_dir: Path
     train_data: str
     eval_data: str
-    # streaming: bool
     n_epochs: int
     learning_rate: float
     weight_decay: float
@@ -23,7 +22,7 @@ class Config:
     per_device_train_batch_size: int
     per_device_eval_batch_size: int
     model_parallel: bool
-    # mixed_precision: bool
+    num_workers: int
     seed: int
 
 
