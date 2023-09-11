@@ -1,18 +1,19 @@
 import json
+import math
 import os
 from collections import defaultdict
 from pathlib import Path
 from typing import cast, Dict, List, Union
 
 import numpy as np
-import polars as pl
 import torch
 import torch.nn as nn
 import torch.optim as optim
-import torch.utils.data as data_utils
+from datasets import IterableDataset
 from fbgemm_gpu.split_embedding_configs import EmbOptimType
-from torch import distributed as dist
+from torch import distributed as torch_dist
 from torch.nn.parallel import DistributedDataParallel as DDP
+from torch.utils.data import DataLoader
 from torchrec.distributed.embedding import EmbeddingCollectionSharder
 from torchrec.distributed.model_parallel import DistributedModelParallel as DMP
 from torchrec.distributed.types import ModuleSharder
@@ -21,12 +22,11 @@ from torchrec.optim.optimizers import in_backward_optimizer_filter
 from torchrec.sparse.jagged_tensor import KeyedJaggedTensor
 from tqdm import tqdm
 
-from data import Bert4RecDataLoader
+from data import load_streaming_data
 from models import Bert4Rec
+from preprocessing import EVAL_NEG_NUM, PAD_ID
 from utils import get_data_size, read_configs
 
-PAD_ID = 0
-EVAL_NEG_NUM = 100
 METRICS_K = (10, 20, 50)
 
 
@@ -46,20 +46,20 @@ def _calculate_metrics(
     batch: List[torch.LongTensor],
     device: torch.device,
 ) -> Dict[str, float]:
-    seqs, candidates = batch
+    seqs = batch["eval_seqs"].to(device)
+    candidates = batch["candidate_items"].to(device)
     kjt = _to_kjt(seqs, device)
     scores = model(kjt)  # B * T * V
     scores = scores[:, -1, :]  # B * V
     scores = torch.gather(scores, dim=1, index=candidates)
-    metrics = recalls_and_ndcgs_for_ks(scores)
+    labels = torch.tensor([1] + [0] * EVAL_NEG_NUM, dtype=torch.float32)
+    labels = labels.repeat(scores.size(0), 1).to(device)
+    metrics = recalls_and_ndcgs_for_ks(scores, labels)
     return metrics
 
 
-def recalls_and_ndcgs_for_ks(scores: torch.Tensor):
+def recalls_and_ndcgs_for_ks(scores: torch.Tensor, labels: torch.Tensor):
     metrics = dict()
-    batch_size = scores.size(dim=0)
-    labels = [1] + [0] * EVAL_NEG_NUM
-    labels = torch.tensor(labels, dtype=torch.float32).repeat(batch_size, 1)
     answer_counts = labels.sum(dim=1)
     _, cut = torch.sort(-scores, dim=1)
     for k in METRICS_K:
@@ -80,51 +80,51 @@ def recalls_and_ndcgs_for_ks(scores: torch.Tensor):
 
 def _train_one_epoch(
     model: Union[DDP, DMP],
-    train_loader: data_utils.DataLoader,
+    train_loader: DataLoader,
+    n_train_steps: int,
     device: torch.device,
     optimizer: EmbOptimType,
     epoch: int,
 ):
     model.train()
     if torch.cuda.is_available():
-        torch.cuda.set_device(dist.get_rank())
+        torch.cuda.set_device(torch_dist.get_rank())
     loss_logs = []
-    cross_entropy = nn.CrossEntropyLoss(ignore_index=PAD_ID)  # todo: label_smoothing
-    for batch in tqdm(train_loader, desc=f"Epoch {epoch+1}"):
-        batch = [x.to(device) for x in batch]
-        optimizer.zero_grad()
-        seqs, labels = batch
-
+    cross_entropy = nn.CrossEntropyLoss(ignore_index=PAD_ID, label_smoothing=0.1)
+    for batch in tqdm(train_loader, total=n_train_steps, desc=f"Epoch {epoch+1}"):
+        seqs = batch["train_interactions"].to(device)
+        labels = batch["labels"].to(device)
         kjt = _to_kjt(seqs, device)
         logits = model(kjt)  # B x T x V
         logits = logits.view(-1, logits.size(-1))  # (B*T) x V
         labels = labels.view(-1)  # B*T
         loss = cross_entropy(logits, labels)
 
+        optimizer.zero_grad()
         loss.backward()
         optimizer.step()
         loss_logs.append(loss.item())
 
-    outputs = [None for _ in range(dist.get_world_size())]
-    dist.all_gather_object(outputs, sum(loss_logs) / len(loss_logs))
-    if dist.get_rank() == 0:
-        print(f"\nEpoch {epoch + 1}, average loss {(sum(outputs) or 0) / len(outputs)}\n")
+    outputs = [None for _ in range(torch_dist.get_world_size())]
+    torch_dist.all_gather_object(outputs, sum(loss_logs) / len(loss_logs))
+    if torch_dist.get_rank() == 0:
+        print(f"\nEpoch {epoch + 1}, average loss {(sum(outputs) or 0) / len(outputs)}\n")  # fmt: skip
 
 
 def _validate(
     model: Union[DDP, DMP],
-    val_loader: data_utils.DataLoader,
+    eval_loader: DataLoader,
+    n_eval_steps: int,
     device: torch.device,
     epoch: int,
 ):
     model.eval()
     if torch.cuda.is_available():
-        torch.cuda.set_device(dist.get_rank())
+        torch.cuda.set_device(torch_dist.get_rank())
     keys = [f"Recall@{k}" for k in METRICS_K] + [f"NDCG@{k}" for k in METRICS_K]
     metrics_log = defaultdict(list)
     with torch.no_grad():
-        for batch in tqdm(val_loader, desc=f"Eval {epoch+1}"):
-            batch = [x.to(device) for x in batch]
+        for batch in tqdm(eval_loader, total=n_eval_steps, desc=f"Eval {epoch + 1}"):
             metrics = _calculate_metrics(model, batch, device)
             for key in keys:
                 metrics_log[key].append(metrics[key])
@@ -132,38 +132,43 @@ def _validate(
     metrics_avg = {
         key: sum(values) / len(values) for key, values in metrics_log.items()
     }
-    outputs = [None for _ in range(dist.get_world_size())]
-    dist.all_gather_object(outputs, metrics_avg)
+    outputs = [None for _ in range(torch_dist.get_world_size())]
+    torch_dist.all_gather_object(outputs, metrics_avg)
 
     metrics_dist = dict()
     for key in keys:
         # noinspection PyUnresolvedReferences
         metrics_dist[key] = np.mean([m[key] for m in outputs])
 
-    if dist.get_rank() == 0:
+    if torch_dist.get_rank() == 0:
         print(f"\nEpoch {epoch + 1}, metrics {metrics_dist}\n")
 
 
 def train_val_test(
     model: Union[DDP, DMP],
-    train_loader: data_utils.DataLoader,
-    val_loader: data_utils.DataLoader,
+    train_dataset: IterableDataset,
+    train_loader: DataLoader,
+    eval_loader: DataLoader,
+    n_train_steps: int,
+    n_eval_steps: int,
     device: torch.device,
     optimizer: EmbOptimType,
     num_epochs: int,
     export_root: str,
 ):
-    _validate(model, val_loader, device, -1)
+    _validate(model, eval_loader, n_eval_steps, device, -1)
     for epoch in range(num_epochs):
-        train_loader.sampler.set_epoch(epoch)  # DistributedSampler
+        # train_loader.sampler.set_epoch(epoch)  # DistributedSampler
+        train_dataset.set_epoch(epoch)
         _train_one_epoch(
             model,
             train_loader,
+            n_train_steps,
             device,
             optimizer,
             epoch,
         )
-        _validate(model, val_loader, device, epoch)
+        _validate(model, eval_loader, n_eval_steps, device, epoch)
         if (epoch + 1) % 10 == 0:
             torch.save(
                 model.state_dict(),
@@ -176,7 +181,7 @@ def main():
     config = read_configs()
     train_data_path = config.data_dir / "parquet_bert4rec" / config.train_data
     eval_data_path = config.data_dir / "parquet_bert4rec" / config.eval_data
-    # cache_dir = config.data_dir / "huggingface"
+    cache_dir = config.data_dir / "huggingface"
 
     rank = int(os.environ["LOCAL_RANK"])
     if torch.cuda.is_available():
@@ -189,10 +194,10 @@ def main():
         backend = "gloo"
         optimizer = EmbOptimType.SGD  # fbgemm CPU version doesn't support ADAM
 
-    if not dist.is_initialized():
-        dist.init_process_group(backend=backend)
+    if not torch_dist.is_initialized():
+        torch_dist.init_process_group(backend=backend)
 
-    world_size = dist.get_world_size()
+    world_size = torch_dist.get_world_size()
     train_batch_size = config.per_device_train_batch_size * world_size
     eval_batch_size = config.per_device_eval_batch_size * world_size
 
@@ -201,20 +206,23 @@ def main():
     print(f"===== train size: {train_data_size:,}, eval size: {eval_data_size:,} =====")
     print(f"===== num devices: {world_size} =====\n")
 
-    train_data = pl.read_parquet(train_data_path).to_pandas()
-    eval_data = pl.read_parquet(eval_data_path).to_pandas()
+    train_dataset, train_loader, eval_loader = load_streaming_data(
+        train_data_path,
+        eval_data_path,
+        cache_dir,
+        train_batch_size,
+        eval_batch_size,
+        config.num_workers,
+        config.seed,
+    )
+    n_train_steps = math.ceil(train_data_size / train_batch_size)
+    n_eval_steps = math.ceil(eval_data_size / eval_batch_size)
+
     path = Path.read_text(config.data_dir / "size_map_bert4rec.json")
     n_items = json.loads(path)["n_items"]
     # 0 for padding, item_count + 1 for mask
     vocab_size = n_items + 2
     print(f"==== vocab size: {vocab_size:,} ====")
-
-    train_loader, eval_loader = Bert4RecDataLoader(
-        train_data,
-        eval_data,
-        train_batch_size,
-        eval_batch_size,
-    ).get_pytorch_dataloaders(rank, world_size)
 
     model_bert4rec = Bert4Rec(
         vocab_size,
@@ -248,13 +256,16 @@ def main():
         device_ids = [rank] if backend == "nccl" else None
         model = DDP(model_bert4rec, device_ids=device_ids)
         optimizer = optim.Adam(
-            model.parameters(), lr=config.learning_rate, weight_decay=config.weight_decay
+            model.parameters(), lr=config.learning_rate, weight_decay=config.weight_decay  # fmt: skip
         )
 
     train_val_test(
         model,
+        train_dataset,
         train_loader,
         eval_loader,
+        n_train_steps,
+        n_eval_steps,
         device,
         optimizer,
         config.n_epochs,
@@ -267,9 +278,9 @@ def run_local(rank, world_size):
     os.environ["MASTER_PORT"] = "12355"
     os.environ["LOCAL_RANK"] = "0"
     # initialize the process group
-    dist.init_process_group("gloo", rank=rank, world_size=world_size)
+    torch_dist.init_process_group("gloo", rank=rank, world_size=world_size)
     main()
-    dist.destroy_process_group()
+    torch_dist.destroy_process_group()
 
 
 if __name__ == "__main__":
