@@ -19,35 +19,30 @@ def load_streaming_data(
     num_workers: int,
     seed: int,
 ):
-    dataset = load_dataset(
+    train_data = load_dataset(
         "parquet",
-        data_files={
-            "train": str(train_data_path),
-            "eval": str(eval_data_path),
-        },
+        data_files={"train": str(train_data_path)},
         cache_dir=str(cache_dir),
         streaming=True,
-    )
-    train_data = _transform_torch_data(dataset["train"], shuffle=True, seed=seed)
+    )["train"]
+    train_data = _transform_torch_data(train_data, shuffle=True, seed=seed)
     train_loader = DataLoader(
         train_data,
         batch_size=train_batch_size,
-        collate_fn=lambda x: (
-            torch.LongTensor([i["train_interactions"] for i in x]),
-            torch.LongTensor([i["labels"] for i in x]),
-        ),
         num_workers=num_workers,
         pin_memory=True,
     )
 
-    eval_data = _transform_torch_data(dataset["eval"], shuffle=False)
+    eval_data = load_dataset(
+        "parquet",
+        data_files={"eval": str(eval_data_path)},
+        cache_dir=str(cache_dir),
+        streaming=True,
+    )["eval"]
+    eval_data = _transform_torch_data(eval_data, shuffle=False)
     eval_loader = DataLoader(
         eval_data,
         batch_size=eval_batch_size,
-        collate_fn=lambda x: (
-            torch.LongTensor([i["eval_seqs"] for i in x]),
-            torch.LongTensor([i["candidate_items"] for i in x]),
-        ),
         num_workers=num_workers,
         pin_memory=True,
     )

@@ -327,7 +327,10 @@ def write_parquet_data(data_dir: Path, data: pl.DataFrame, prefix: str):
             print("shuffling...")
             part = part.sample(fraction=1.0, shuffle=True, seed=42)
 
-        part.write_parquet(write_dir.joinpath(f"{prefix}_part_{i}.parquet"))
+        # `datasets` only supports pandas parquet when using List[int]
+        part.to_pandas().to_parquet(
+            write_dir.joinpath(f"{prefix}_part_{i}.parquet"), index=False
+        )
         print(f"{prefix} part_{i} finished in {(time.perf_counter() - start):.2f}s")
 
 
