@@ -16,8 +16,8 @@ Before running, one should set some hyperparameters in [config.toml](https://git
 ## Requirements
 
 + python >= 3.8
-+ jax == 0.4.6
-+ flax == 0.6.7
++ jax == 0.4.13
++ flax == 0.7.2
 + polars == 0.17.8
 + datasets == 2.11.0
 + tqdm
