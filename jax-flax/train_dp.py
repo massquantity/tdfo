@@ -8,6 +8,7 @@ import jax.numpy as jnp
 import numpy as np
 import optax
 import polars as pl
+import tensorflow as tf
 from datasets import Dataset, IterableDataset, load_dataset
 from flax.training import train_state
 from flax.training.common_utils import get_metrics, shard
@@ -19,6 +20,8 @@ from utils import read_configs
 
 # import os
 # os.environ["XLA_FLAGS"] = "--xla_force_host_platform_device_count=8"
+# import chex
+# chex.set_n_cpu_devices(2)
 
 
 # noinspection PyAbstractClass
@@ -47,16 +50,16 @@ def train_step(state: TrainState, batch: Dict[str, jnp.ndarray]):
         labels = batch.pop("label")
         logits = state.apply_fn({"params": params}, batch)
         loss = jnp.mean(optax.sigmoid_binary_cross_entropy(logits, labels))
-        return loss
+        return loss, logits
 
     dynamic_scale = state.dynamic_scale
     if dynamic_scale:
-        grad_fn = dynamic_scale.value_and_grad(loss_fn, axis_name="batch")
+        grad_fn = dynamic_scale.value_and_grad(loss_fn, axis_name="batch", has_aux=True)
         # dynamic loss takes care of averaging gradients across replicas
-        dynamic_scale, is_finite_grads, loss, grads = grad_fn(state.params)
+        dynamic_scale, is_finite_grads, (loss, logits), grads = grad_fn(state.params)
     else:
-        grad_fn = jax.value_and_grad(loss_fn)
-        loss, grads = grad_fn(state.params)
+        grad_fn = jax.value_and_grad(loss_fn, has_aux=True)
+        (loss, logits), grads = grad_fn(state.params)
         grads = jax.lax.pmean(grads, axis_name="batch")
 
     new_state = state.apply_gradients(grads=grads)
@@ -77,7 +80,7 @@ def train_step(state: TrainState, batch: Dict[str, jnp.ndarray]):
             dynamic_scale=dynamic_scale,
         )
         # jax.debug.print("scale: {}", dynamic_scale.scale)
-    return new_state, metrics
+    return new_state, metrics, logits
 
 
 def eval_step(state: TrainState, batch: Dict[str, jnp.ndarray]):
@@ -85,7 +88,7 @@ def eval_step(state: TrainState, batch: Dict[str, jnp.ndarray]):
     logits = state.apply_fn({"params": state.params}, batch)
     loss = jnp.mean(optax.sigmoid_binary_cross_entropy(logits, labels))
     metrics = jax.lax.pmean({"loss": loss}, axis_name="batch")
-    return metrics
+    return metrics, logits
 
 
 def data_loader(
@@ -184,6 +187,7 @@ def main():
 
     for epoch in range(1, config.n_epochs + 1):
         train_metrics = []
+        train_auc = tf.keras.metrics.AUC(from_logits=True)
         if config.streaming:
             train_loader = lazy_data_loader(
                 dataset["train"],
@@ -206,14 +210,17 @@ def main():
         train_loader = map(shard, train_loader)
         train_loader = flax.jax_utils.prefetch_to_device(train_loader, size=2)
         for batch in tqdm(train_loader, total=n_train_steps, desc="Training..."):
-            state, metrics = p_train_step(state, batch)
+            state, metrics, logits = p_train_step(state, batch)
             train_metrics.append(metrics)
+            train_auc.update_state(np.array(batch["label"]), np.array(logits))
 
         train_metrics = get_metrics(train_metrics)
         train_metrics = jax.tree_util.tree_map(jnp.mean, train_metrics)
-        print(f"\nEpoch {epoch} train loss: {(train_metrics['loss']):.4f}")
+        print(f"\nEpoch {epoch} train loss: {(train_metrics['loss']):.4f}, "
+              f"roc_auc: {train_auc.result():.4f}")
 
         eval_metrics = []
+        eval_auc = tf.keras.metrics.AUC(from_logits=True)
         if config.streaming:
             eval_loader = lazy_data_loader(
                 dataset["eval"], eval_batch_size, drop_last_batch=False, shuffle=False
@@ -224,14 +231,18 @@ def main():
             )
 
         for batch in tqdm(eval_loader, total=n_eval_steps, desc="Evaluating..."):
-            metrics = p_eval_step_pad(
+            metrics, logits = p_eval_step_pad(
                 state, batch, min_device_batch=config.per_device_eval_batch_size
             )
             eval_metrics.append(metrics)
+            # last batch has been padded
+            logits = logits.flatten()[:len(batch["label"])]
+            eval_auc.update_state(batch["label"], logits)
 
         eval_metrics = get_metrics(eval_metrics)
         eval_metrics = jax.tree_util.tree_map(jnp.mean, eval_metrics)
-        print(f"\nEpoch {epoch} eval loss: {(eval_metrics['loss']):.4f}")
+        print(f"\nEpoch {epoch} eval loss: {(eval_metrics['loss']):.4f}, "
+              f"roc_auc: {eval_auc.result():.4f}")
 
 
 if __name__ == "__main__":
