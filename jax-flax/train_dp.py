@@ -10,7 +10,7 @@ import optax
 import polars as pl
 import tensorflow as tf
 from datasets import Dataset, IterableDataset, load_dataset
-from flax.training import train_state
+from flax.training.train_state import TrainState as FlaxTrainState
 from flax.training.common_utils import get_metrics, shard
 from flax.training.dynamic_scale import DynamicScale
 from tqdm import tqdm
@@ -25,7 +25,7 @@ from utils import read_configs
 
 
 # noinspection PyAbstractClass
-class TrainState(train_state.TrainState):
+class TrainState(FlaxTrainState):
     dynamic_scale: DynamicScale
 
 
