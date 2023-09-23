@@ -1,8 +1,10 @@
 from typing import Any, Callable, Dict
 
+import flax
 import jax
 import jax.numpy as jnp
 from flax import linen as nn
+from flax.training.train_state import TrainState
 
 
 class TwoTower(nn.Module):
@@ -121,6 +123,20 @@ def init_model(
     model = TwoTower(size_map, embed_dim, dtype=compute_dtype)
     params = model.init(rng, init_inputs)["params"]
     return model, params
+
+
+def save_params(state: TrainState, file_name: str):
+    with open(file_name, "wb") as f:
+        param_bytes = flax.serialization.to_bytes(state.params)
+        f.write(param_bytes)
+
+
+def load_params(state: TrainState, file_name: str):
+    with open(file_name, "rb") as f:
+        param_bytes = f.read()
+        new_params = flax.serialization.from_bytes(state.params, param_bytes)
+        new_state = state.replace(params=new_params)
+    return new_state
 
 
 def get_dtype(mixed_precision: bool):
