@@ -10,7 +10,7 @@ from datasets import Dataset, IterableDataset, load_dataset
 from flax.training.train_state import TrainState
 from tqdm import trange
 
-from models import init_model
+from models import init_model, save_params
 from utils import read_configs
 
 
@@ -160,6 +160,8 @@ def main():
             batch = next(eval_loader)
             eval_loss.append(eval_step(state, batch))
         print(f"\nEpoch {epoch} eval loss: {(np.mean(eval_loss)):.4f}")
+
+    save_params(state, "model_params.pt")
 
 
 if __name__ == "__main__":

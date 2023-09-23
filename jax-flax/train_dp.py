@@ -15,7 +15,7 @@ from flax.training.common_utils import get_metrics, shard
 from flax.training.dynamic_scale import DynamicScale
 from tqdm import tqdm
 
-from models import init_model
+from models import init_model, save_params
 from utils import read_configs
 
 # import os
@@ -243,6 +243,8 @@ def main():
         eval_metrics = jax.tree_util.tree_map(jnp.mean, eval_metrics)
         print(f"\nEpoch {epoch} eval loss: {(eval_metrics['loss']):.4f}, "
               f"roc_auc: {eval_auc.result():.4f}")
+
+    save_params(flax.jax_utils.unreplicate(state), "model_params.pt")
 
 
 if __name__ == "__main__":
